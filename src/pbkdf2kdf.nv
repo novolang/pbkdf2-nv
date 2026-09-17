@@ -1,0 +1,164 @@
+// pbkdf2kdf — the derivation itself.
+//
+// WHAT PBKDF2 IS.  RFC 8018 § 5.2, in one paragraph.  The derived key
+// is a sequence of blocks, one per `hLen` bytes asked for.  Block `i`
+// is
+//
+//     F(P, S, c, i) = U_1 XOR U_2 XOR ... XOR U_c
+//
+// where `U_1` is the pseudorandom function of the password over the
+// salt followed by `i` as four big-endian bytes, and each later `U` is
+// the function of the password over the previous `U`.  The blocks are
+// concatenated and the result is truncated to the length asked for.
+//
+// That is the whole algorithm.  Everything expensive is the `c`
+// HMACs in one chain, and everything a caller can get wrong is in
+// `pbkdf2params`.
+//
+// THE CHAIN IS SEQUENTIAL, THE BLOCKS ARE NOT.  Each `U` depends on
+// the one before it, so a single block cannot be parallelised — which
+// is the point.  Different blocks are independent, so a caller asking
+// for a long key gets no discount: a 64-byte key out of HMAC-SHA-256
+// costs exactly twice a 32-byte one, and an attacker guessing
+// passwords against a 64-byte key that only needs its first 32 bytes
+// checks it at half the cost the honest party paid.
+// `pbkdf2params.block_count` is that fact as a number.
+//
+// PBKDF2 IS MEMORY-HARD AGAINST NOTHING.  It is a chain of HMACs over
+// a few hundred bytes of state, which is exactly what a GPU or an
+// ASIC does well.  That is not a flaw in the implementation, it is the
+// design: PBKDF2 was standardised in 2000, before memory-hardness was
+// a technique.  It is the right function when a specification names it
+// — WPA2, PKCS #8, PKCS #12, a hundred file formats — and the wrong
+// one to choose for a new password store.  bcrypt-nv and, when the
+// grid has them, Argon2 and scrypt are the alternatives.
+//
+// THE OUTPUT BUFFER IS THE CALLER'S.  `derive_into` writes into a
+// buffer the caller already owns and hands it back, so a program that
+// derives a key per request needs one buffer rather than one per
+// request.  `derive` on top allocates, because a program deriving one
+// key should not have to think about it.
+
+use std.bytes
+
+// How many bytes the block index occupies in the pseudorandom
+// function's input: four, big-endian.
+//
+// RFC 8018 § 5.2's `INT(i)`.  It is the reason the derived key is
+// capped at `(2^32 - 1)` blocks, and the single most common place a
+// hand-written PBKDF2 goes wrong — a little-endian index gives a
+// perfectly self-consistent key that matches nothing.
+pub const PBKDF2_BLOCK_INDEX_BYTES = 4
+
+// Derive a key into a buffer the caller owns, and hand that buffer
+// back.
+//
+// `out` must be exactly `pbkdf2params.dk_len_of(p)` long; any other
+// length is `Pbkdf2OutputBufferWrong` with both numbers, rather than a
+// partial key written into whatever was given.
+//
+// The password and the salt are bytes.  Neither is checked for
+// length: RFC 8018 places no minimum on either, and a caller reading
+// an old stored hash has whatever salt that hash carries.
+// `pbkdf2params.check` is where a salt length is judged, at start-up.
+//
+// ```novo
+// use std.bytes
+// use pbkdf2kdf
+// use pbkdf2params
+//
+// fn main() [io]
+//     let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+//     match pbkdf2kdf.derive_into(p, bytes.from_str("password"),
+//                                 bytes.from_str("salt"), bytes.zeros(32))
+//         Ok(dk) => println("${bytes.len(dk)}")   // 32
+//         Err(e) => println(e.message())
+// ```
+pub fn derive_into(p: Pbkdf2Params, password: Bytes, salt: Bytes,
+                   out: Bytes) -> Result<Bytes, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2kdf.derive_into")
+
+// Derive a key into a buffer this call allocates.
+//
+// The convenience over `derive_into` for a program that derives one
+// key and is not reusing a buffer.
+//
+// ```novo
+// use std.bytes
+// use pbkdf2kdf
+// use pbkdf2params
+//
+// fn main() [io]
+//     let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+//     match pbkdf2kdf.derive(p, bytes.from_str("password"), bytes.from_str("salt"))
+//         Ok(dk) => println("${bytes.len(dk)}")   // 32
+//         Err(e) => println(e.message())
+// ```
+pub fn derive(p: Pbkdf2Params, password: Bytes, salt: Bytes) -> Result<Bytes, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2kdf.derive")
+
+// One block of the derived key: RFC 8018 § 5.2's `F(P, S, c, i)`.
+//
+// `index` is one-based, as the specification numbers it: the first
+// block is `F(P, S, c, 1)` and there is no block 0.  The answer is
+// exactly `pbkdf2prf.block_bytes` long.
+//
+// Published for two reasons.  A failing implementation is bisected a
+// block at a time against RFC 6070's vectors, and a caller deriving
+// several keys from one password — a cipher key and a MAC key, say —
+// drives the blocks itself rather than deriving a long key and
+// slicing it.
+//
+// ```novo
+// use std.bytes
+// use pbkdf2kdf
+// use pbkdf2params
+//
+// fn main() [io]
+//     let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+//     match pbkdf2kdf.block(p, bytes.from_str("password"),
+//                           bytes.from_str("salt"), 1)
+//         Ok(b)  => println("${bytes.len(b)}")   // 32
+//         Err(e) => println(e.message())
+// ```
+pub fn block(p: Pbkdf2Params, password: Bytes, salt: Bytes,
+             index: Int) -> Result<Bytes, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2kdf.block")
+
+// The bytes the pseudorandom function reads on the FIRST iteration of
+// block `index`: the salt followed by the index as four big-endian
+// bytes.
+//
+// RFC 8018 § 5.2's `S || INT(i)`.  Published because the endianness of
+// those four bytes is the single most common place a hand-written
+// PBKDF2 goes wrong, and a test that asserts these bytes fails at the
+// mistake rather than three hundred thousand HMACs later.
+//
+// ```novo
+// use std.bytes
+// use pbkdf2kdf
+//
+// fn main() [io]
+//     let seed = pbkdf2kdf.block_seed(bytes.from_str("salt"), 1)
+//     println(bytes.to_hex(seed))   // 73616c7400000001
+// ```
+pub fn block_seed(salt: Bytes, index: Int) -> Bytes []
+    todo("pbkdf2-nv.pbkdf2kdf.block_seed")
+
+// Whether a derived key equals another, in constant time.
+//
+// Verifying a password means deriving a key and comparing it with the
+// stored one, and a comparison that stops at the first differing byte
+// says how many bytes matched.  This is crypto-nv's `digest.ct_eq`
+// under a name that says what it is for; `pbkdf2phc.verify` already
+// uses it, and this is here for a caller doing something else.
+//
+// ```novo
+// use std.bytes
+// use pbkdf2kdf
+//
+// fn main() [io]
+//     println("${pbkdf2kdf.keys_equal(bytes.zeros(32), bytes.zeros(32))}")   // true
+// ```
+pub fn keys_equal(a: Bytes, b: Bytes) -> Bool []
+    todo("pbkdf2-nv.pbkdf2kdf.keys_equal")

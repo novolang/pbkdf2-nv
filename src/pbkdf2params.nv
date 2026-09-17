@@ -1,0 +1,289 @@
+// pbkdf2params — the work factor as a value a service builds once and
+// names.
+//
+// THE PROBLEM THIS SOLVES.  Every PBKDF2 in the world has the same
+// signature: password, salt, iterations, length, and sometimes a
+// digest.  Three of those five are security decisions, and a caller
+// writing the call has to get them right at every call site, from
+// memory, forever.  What happens instead is that a library picks
+// defaults, and a default that is a security decision is a decision
+// nobody revisits: a `1000` that was defensible in 2000 is still in
+// production in 2026, because nothing ever asked about it again.
+//
+// `Pbkdf2Params` is that decision as a VALUE.  A service builds one at
+// start-up, names it, prints it if it likes, and passes it to every
+// derivation.  Changing the work factor is then one line in one place
+// rather than a search for call sites.  jwt-nv's `JwtPolicy` is the
+// same idea for token validation.
+//
+// THE FLOOR, AND WHY IT IS NOT A DEFAULT.  A default can be overridden
+// by accident.  This package carries a floor per pseudorandom function
+// and REFUSES to derive below it, and the only way past is
+// `allowing_below_floor`, which is a named constructor.  A deployment
+// that has to read `$pbkdf2-sha1$i=1000$` hashes written a decade ago
+// says so once, at the line that reads old hashes, and a reviewer sees
+// it there.  A deployment writing new hashes never says it at all.
+//
+// WHERE THE FLOOR NUMBERS COME FROM.  OWASP's Password Storage Cheat
+// Sheet, which publishes a figure per pseudorandom function and
+// revises it: 1,300,000 for HMAC-SHA-1, 600,000 for HMAC-SHA-256 and
+// 210,000 for HMAC-SHA-512.  They differ because one iteration costs
+// different amounts, and the intent is that a guess costs the same
+// whichever is chosen.  The numbers are constants here, so a
+// deployment can read what its own toolchain believes and compare it
+// with what it has stored.
+
+// The iteration floor for HMAC-SHA-1.
+pub const PBKDF2_SHA1_FLOOR = 1300000
+
+// The iteration floor for HMAC-SHA-256.
+pub const PBKDF2_SHA256_FLOOR = 600000
+
+// The iteration floor for HMAC-SHA-512.
+pub const PBKDF2_SHA512_FLOOR = 210000
+
+// The derived key length `recommended` asks for, in bytes: 32.
+//
+// A key long enough for anything on this grid, and short enough that
+// it is one block of HMAC-SHA-256 output — so the ordinary
+// recommendation costs exactly the iterations and not twice them.
+pub const PBKDF2_DEFAULT_DK_BYTES = 32
+
+// The salt length RFC 8018 § 4.1 recommends, in bytes: 8.
+//
+// A minimum and not a target.  Sixteen is what modern practice uses
+// and what `check` warns below; this package refuses nothing about the
+// salt, because a caller reading an old stored hash has whatever salt
+// that hash carries.
+pub const PBKDF2_MIN_SALT_BYTES = 8
+
+// What a derivation costs and how long its answer is, as one value.
+//
+// A plain struct rather than a `@value` one because it is a `Result`
+// payload — every constructor below answers one — and a `@value`
+// struct cannot be one (E2015).
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+//     println("${pbkdf2params.iterations_of(p)}")   // 600000
+// ```
+pub struct Pbkdf2Params
+    // Which HMAC.
+    prf: Pbkdf2Prf
+    // How many times it runs per output block.  RFC 8018 calls this
+    // `c`.
+    iterations: Int
+    // How many bytes the derived key is.  RFC 8018 calls this `dkLen`.
+    dk_len: Int
+    // Whether these parameters were built through
+    // `allowing_below_floor`.  The one field that is not arithmetic:
+    // it records a decision somebody made on purpose, so that
+    // `derive` can honour it and a log can report it.
+    below_floor_allowed: Bool
+
+// The parameters a new system should use for a pseudorandom function:
+// that function's floor, and a 32-byte key.
+//
+// Cannot fail, because the floor is at the floor by construction.
+// This is the constructor to start from; `with_iterations` raises it,
+// and nothing lowers it except the named override.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     let p = pbkdf2params.recommended(Pbkdf2HmacSha512)
+//     println("${pbkdf2params.iterations_of(p)}")   // 210000
+// ```
+pub fn recommended(prf: Pbkdf2Prf) -> Pbkdf2Params []
+    todo("pbkdf2-nv.pbkdf2params.recommended")
+
+// Parameters with an explicit iteration count, refused if it is below
+// the floor.
+//
+// The ordinary constructor for a service that has measured its own
+// login endpoint and chosen a number above the floor.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     match pbkdf2params.params(Pbkdf2HmacSha256, 1000000, 32)
+//         Ok(p)  => println("${pbkdf2params.iterations_of(p)}")   // 1000000
+//         Err(e) => println(e.message())
+// ```
+pub fn params(prf: Pbkdf2Prf, iterations: Int, dk_len: Int) -> Result<Pbkdf2Params, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2params.params")
+
+// Parameters below the floor, built on purpose.
+//
+// THE ONLY WAY PAST THE FLOOR, and it is a named constructor rather
+// than a flag so that `grep` finds every place a program decided to
+// go below it.  The use it exists for is real: a deployment holding
+// `$pbkdf2-sha1$i=1000$` hashes written a decade ago has to verify
+// them before it can re-derive at a modern count, and that verify is
+// the one moment the password is in hand.
+//
+// Still refuses a count of zero or less, which is not a low cost but
+// an absent one.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     match pbkdf2params.allowing_below_floor(Pbkdf2HmacSha1, 1000, 20)
+//         Ok(p)  => println("${pbkdf2params.is_below_floor(p)}")   // true
+//         Err(e) => println(e.message())
+// ```
+pub fn allowing_below_floor(prf: Pbkdf2Prf, iterations: Int,
+                            dk_len: Int) -> Result<Pbkdf2Params, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2params.allowing_below_floor")
+
+// The same parameters with a different iteration count.
+//
+// Refused below the floor unless the parameters already carry the
+// override, which is what makes the override a property of the VALUE
+// rather than of one call.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     match pbkdf2params.with_iterations(
+//               pbkdf2params.recommended(Pbkdf2HmacSha256), 2000000)
+//         Ok(p)  => println("${pbkdf2params.iterations_of(p)}")   // 2000000
+//         Err(e) => println(e.message())
+// ```
+pub fn with_iterations(p: Pbkdf2Params, iterations: Int) -> Result<Pbkdf2Params, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2params.with_iterations")
+
+// The same parameters with a different derived key length.
+//
+// Refused at zero and above `pbkdf2prf.max_derived_bytes`.  See the
+// note on `pbkdf2kdf.derive` about what a long key costs.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     match pbkdf2params.with_dk_len(
+//               pbkdf2params.recommended(Pbkdf2HmacSha256), 64)
+//         Ok(p)  => println("${pbkdf2params.dk_len_of(p)}")   // 64
+//         Err(e) => println(e.message())
+// ```
+pub fn with_dk_len(p: Pbkdf2Params, dk_len: Int) -> Result<Pbkdf2Params, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2params.with_dk_len")
+
+// The same parameters over a different pseudorandom function.
+//
+// The iteration count is NOT rescaled, and the result is refused if it
+// is below the new function's floor.  Moving from HMAC-SHA-512 to
+// HMAC-SHA-256 at the same count is a cut in cost, not a change of
+// algorithm, and it should be said out loud.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     match pbkdf2params.with_prf(
+//               pbkdf2params.recommended(Pbkdf2HmacSha512), Pbkdf2HmacSha256)
+//         Ok(_)  => println("this needs more iterations than 210000")
+//         Err(e) => println(pbkdf2err.code(e))   // iterations-below-floor
+// ```
+pub fn with_prf(p: Pbkdf2Params, prf: Pbkdf2Prf) -> Result<Pbkdf2Params, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2params.with_prf")
+
+// The pseudorandom function these parameters run over.
+pub fn prf_of(p: Pbkdf2Params) -> Pbkdf2Prf []
+    todo("pbkdf2-nv.pbkdf2params.prf_of")
+
+// How many iterations these parameters ask for.
+pub fn iterations_of(p: Pbkdf2Params) -> Int []
+    todo("pbkdf2-nv.pbkdf2params.iterations_of")
+
+// How many bytes of key these parameters produce.
+pub fn dk_len_of(p: Pbkdf2Params) -> Int []
+    todo("pbkdf2-nv.pbkdf2params.dk_len_of")
+
+// Whether these parameters were built through the override.
+//
+// What a deployment logs when it verifies an old hash, so that the
+// count of legacy verifications is a number somebody can watch go to
+// zero.
+pub fn is_below_floor(p: Pbkdf2Params) -> Bool []
+    todo("pbkdf2-nv.pbkdf2params.is_below_floor")
+
+// This package's floor for a pseudorandom function.
+//
+// Published so that a deployment can compare what its toolchain
+// believes against what it has stored, and raise its own number when
+// this one moves.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     println("${pbkdf2params.floor_for(Pbkdf2HmacSha256)}")   // 600000
+// ```
+pub fn floor_for(prf: Pbkdf2Prf) -> Int []
+    todo("pbkdf2-nv.pbkdf2params.floor_for")
+
+// How many blocks of the pseudorandom function a derivation will
+// compute: `dk_len` divided by the block length, rounded up.
+//
+// The one performance fact a caller needs, and the reason it is a
+// published function rather than a sentence in a README: each block
+// costs a whole chain of `iterations` HMACs.  A 64-byte key out of
+// HMAC-SHA-256 costs exactly twice a 32-byte one.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+//     println("${pbkdf2params.block_count(p)}")   // 1
+// ```
+pub fn block_count(p: Pbkdf2Params) -> Int []
+    todo("pbkdf2-nv.pbkdf2params.block_count")
+
+// How many times the pseudorandom function will run in total:
+// `block_count` times `iterations`.
+//
+// What a service compares against the time its login endpoint can
+// afford.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+//     println("${pbkdf2params.total_hmac_calls(p)}")   // 600000
+// ```
+pub fn total_hmac_calls(p: Pbkdf2Params) -> Int []
+    todo("pbkdf2-nv.pbkdf2params.total_hmac_calls")
+
+// The fault in an unusable set of parameters, or `None`.
+//
+// Run this at start-up, where the message can name the field and a
+// deployment can refuse to start.  Left to run time, the same faults
+// arrive as a stream of failed logins that look like users getting
+// their passwords wrong.
+//
+// Answers `Some` for a salt shorter than `PBKDF2_MIN_SALT_BYTES`, for
+// a derived key that is not a whole number of anything useful, and for
+// parameters carrying the override — because a service that did not
+// mean to enable it should find out at start-up.
+//
+// ```novo
+// use pbkdf2params
+//
+// fn main() [io]
+//     match pbkdf2params.check(pbkdf2params.recommended(Pbkdf2HmacSha256), 16)
+//         Some(e) => println(e.message())
+//         None    => println("usable")
+// ```
+pub fn check(p: Pbkdf2Params, salt_len: Int) -> ?Pbkdf2Error []
+    todo("pbkdf2-nv.pbkdf2params.check")

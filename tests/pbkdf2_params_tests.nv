@@ -1,0 +1,195 @@
+// tests/pbkdf2_params_tests.nv — the work factor as a value, and the
+// floor that has to be stepped over on purpose.
+//
+// RED ON PURPOSE, like every suite here: each assertion reaches
+// `not implemented: pbkdf2-nv.<module>.<fn>`.
+//
+// The floor is this package's policy and not RFC 8018's, so these
+// assertions are about the DESIGN rather than about a standard.  What
+// the standard fixes — the block length, the derived-key cap, the
+// meaning of `c` — is asserted here too, beside it, so that a reader
+// can see which is which.
+
+use std.test
+use pbkdf2params
+use pbkdf2prf
+
+@test
+fn test_the_three_pseudorandom_functions_and_their_block_lengths() [io]
+    test.case("hLen is 20, 32 and 64 bytes")
+    test.assert_eq(pbkdf2prf.block_bytes(Pbkdf2HmacSha1), 20)
+    test.assert_eq(pbkdf2prf.block_bytes(Pbkdf2HmacSha256), 32)
+    test.assert_eq(pbkdf2prf.block_bytes(Pbkdf2HmacSha512), 64)
+
+    test.case("HMAC pads the key to the hash's own block size")
+    test.assert_eq(pbkdf2prf.hmac_block_bytes(Pbkdf2HmacSha1), 64)
+    test.assert_eq(pbkdf2prf.hmac_block_bytes(Pbkdf2HmacSha256), 64)
+    test.assert_eq(pbkdf2prf.hmac_block_bytes(Pbkdf2HmacSha512), 128)
+
+    test.case("the derived-key cap is (2^32 - 1) blocks")
+    test.assert_eq(pbkdf2prf.max_derived_bytes(Pbkdf2HmacSha1), 4294967295 * 20)
+    test.assert(pbkdf2prf.max_derived_bytes(Pbkdf2HmacSha512)
+                > pbkdf2prf.max_derived_bytes(Pbkdf2HmacSha256))
+
+@test
+fn test_the_prf_is_named_by_its_phc_identifier() [io]
+    test.case("the three spellings a PHC string carries")
+    test.assert_eq_str(pbkdf2prf.prf_name(Pbkdf2HmacSha1), "pbkdf2-sha1")
+    test.assert_eq_str(pbkdf2prf.prf_name(Pbkdf2HmacSha256), "pbkdf2-sha256")
+    test.assert_eq_str(pbkdf2prf.prf_name(Pbkdf2HmacSha512), "pbkdf2-sha512")
+
+    test.case("and they read back")
+    match pbkdf2prf.prf_named("pbkdf2-sha512")
+        Ok(p)  => test.assert_eq(pbkdf2prf.block_bytes(p), 64)
+        Err(e) => test.fail(e.message())
+
+    test.case("a bare `pbkdf2` is refused rather than guessed at as SHA-1")
+    match pbkdf2prf.prf_named("pbkdf2")
+        Ok(_)  => test.fail("guessing at a stored hash's function is guessing at the hash")
+        Err(e) => test.assert_eq_str(pbkdf2err.code(e), "unknown-prf")
+
+    test.case("and so is one this package does not have")
+    match pbkdf2prf.prf_named("pbkdf2-sha3-256")
+        Ok(_)  => test.fail("crypto-nv publishes three HMACs and this is not one")
+        Err(e) => test.assert(pbkdf2err.is_format_fault(e))
+
+@test
+fn test_the_recommended_parameters_are_at_the_floor() [io]
+    // The constructor a new system starts from.  It cannot fail,
+    // because it is at the floor by construction.
+    test.case("each function's floor is its own number")
+    test.assert_eq(pbkdf2params.floor_for(Pbkdf2HmacSha1), pbkdf2params.PBKDF2_SHA1_FLOOR)
+    test.assert_eq(pbkdf2params.floor_for(Pbkdf2HmacSha256), 600000)
+    test.assert_eq(pbkdf2params.floor_for(Pbkdf2HmacSha512), 210000)
+
+    test.case("they differ because one iteration costs different amounts")
+    test.assert(pbkdf2params.PBKDF2_SHA1_FLOOR > pbkdf2params.PBKDF2_SHA256_FLOOR)
+    test.assert(pbkdf2params.PBKDF2_SHA256_FLOOR > pbkdf2params.PBKDF2_SHA512_FLOOR)
+
+    test.case("recommended() sits at the floor and asks for 32 bytes")
+    let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+    test.assert_eq(pbkdf2params.iterations_of(p), 600000)
+    test.assert_eq(pbkdf2params.dk_len_of(p), pbkdf2params.PBKDF2_DEFAULT_DK_BYTES)
+    test.assert(not pbkdf2params.is_below_floor(p))
+
+@test
+fn test_the_floor_is_refused_and_not_defaulted() [io]
+    // THE decision this package makes differently from every other
+    // PBKDF2.  A default can be overridden by accident; a refusal
+    // cannot.
+    test.case("1000 iterations of HMAC-SHA-256 is refused, naming both numbers")
+    match pbkdf2params.params(Pbkdf2HmacSha256, 1000, 32)
+        Ok(_)  => test.fail("1000 was defensible in 2000 and is not now")
+        Err(e) =>
+            test.assert_eq_str(pbkdf2err.code(e), "iterations-below-floor")
+            test.assert(pbkdf2err.is_policy_fault(e))
+            test.assert(pbkdf2err.is_input_fault(e))
+
+    test.case("a count at or above the floor is accepted")
+    match pbkdf2params.params(Pbkdf2HmacSha256, 600000, 32)
+        Ok(p)  => test.assert(not pbkdf2params.is_below_floor(p))
+        Err(e) => test.fail(e.message())
+
+    test.case("and raising it further is always allowed")
+    match pbkdf2params.with_iterations(pbkdf2params.recommended(Pbkdf2HmacSha256),
+                                       2000000)
+        Ok(p)  => test.assert_eq(pbkdf2params.iterations_of(p), 2000000)
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_the_override_is_a_named_constructor_and_sticks_to_the_value() [io]
+    // The use it exists for: verifying a $pbkdf2-sha1$i=1000$ hash
+    // written a decade ago, which is the one moment the password is in
+    // hand and the hash can be replaced.
+    test.case("allowing_below_floor produces parameters that say so")
+    match pbkdf2params.allowing_below_floor(Pbkdf2HmacSha1, 1000, 20)
+        Err(e) => test.fail(e.message())
+        Ok(p)  =>
+            test.assert(pbkdf2params.is_below_floor(p))
+            test.assert_eq(pbkdf2params.iterations_of(p), 1000)
+
+            test.case("and the override is a property of the VALUE, not of one call")
+            match pbkdf2params.with_iterations(p, 500)
+                Ok(q)  => test.assert_eq(pbkdf2params.iterations_of(q), 500)
+                Err(e) => test.fail(e.message())
+
+    test.case("zero iterations is still refused, because that is not a low cost")
+    match pbkdf2params.allowing_below_floor(Pbkdf2HmacSha1, 0, 20)
+        Ok(_)  => test.fail("RFC 8018 writes c as a positive integer")
+        Err(e) =>
+            test.assert_eq_str(pbkdf2err.code(e), "iterations-not-positive")
+            test.assert(not pbkdf2err.is_policy_fault(e))
+
+@test
+fn test_changing_the_prf_does_not_rescale_the_count() [io]
+    // Moving from HMAC-SHA-512 to HMAC-SHA-256 at the same count is a
+    // cut in cost, not a change of algorithm, and it is said out loud.
+    test.case("210000 iterations is at SHA-512's floor and under SHA-256's")
+    match pbkdf2params.with_prf(pbkdf2params.recommended(Pbkdf2HmacSha512),
+                                Pbkdf2HmacSha256)
+        Ok(_)  => test.fail("210000 is below 600000")
+        Err(e) => test.assert_eq_str(pbkdf2err.code(e), "iterations-below-floor")
+
+    test.case("and the other direction is fine")
+    match pbkdf2params.with_prf(pbkdf2params.recommended(Pbkdf2HmacSha256),
+                                Pbkdf2HmacSha512)
+        Ok(p)  => test.assert_eq(pbkdf2prf.block_bytes(pbkdf2params.prf_of(p)), 64)
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_a_long_key_costs_a_whole_extra_chain_per_block() [io]
+    // The one performance fact a caller needs, as a number rather than
+    // a sentence in a README.
+    let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+
+    test.case("32 bytes out of HMAC-SHA-256 is one block")
+    test.assert_eq(pbkdf2params.block_count(p), 1)
+    test.assert_eq(pbkdf2params.total_hmac_calls(p), 600000)
+
+    test.case("64 bytes is two blocks and exactly twice the work")
+    match pbkdf2params.with_dk_len(p, 64)
+        Err(e) => test.fail(e.message())
+        Ok(q)  =>
+            test.assert_eq(pbkdf2params.block_count(q), 2)
+            test.assert_eq(pbkdf2params.total_hmac_calls(q), 1200000)
+
+    test.case("33 bytes is two blocks as well — the last one is truncated")
+    match pbkdf2params.with_dk_len(p, 33)
+        Ok(q)  => test.assert_eq(pbkdf2params.block_count(q), 2)
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_a_key_of_no_bytes_is_refused() [io]
+    test.case("zero is not a short key, it is the absence of one")
+    match pbkdf2params.with_dk_len(pbkdf2params.recommended(Pbkdf2HmacSha256), 0)
+        Ok(_)  => test.fail("a key of no bytes is nothing")
+        Err(e) => test.assert_eq_str(pbkdf2err.code(e), "derived-key-empty")
+
+    test.case("and one past RFC 8018's cap is refused with the cap in it")
+    match pbkdf2params.with_dk_len(pbkdf2params.recommended(Pbkdf2HmacSha256),
+                                   pbkdf2prf.max_derived_bytes(Pbkdf2HmacSha256) + 1)
+        Ok(_)  => test.fail("the block index is a four-byte counter")
+        Err(e) => test.assert_eq_str(pbkdf2err.code(e), "derived-key-too-long")
+
+@test
+fn test_check_is_run_at_start_up_where_the_message_can_name_the_field() [io]
+    // Left to run time, the same faults arrive as a stream of failed
+    // logins that look like users getting their passwords wrong.
+    test.case("the recommended parameters with a sixteen-byte salt are usable")
+    match pbkdf2params.check(pbkdf2params.recommended(Pbkdf2HmacSha256), 16)
+        Some(e) => test.fail(e.message())
+        None    => test.assert(true)
+
+    test.case("a salt under RFC 8018's recommended minimum is reported")
+    test.assert_eq(pbkdf2params.PBKDF2_MIN_SALT_BYTES, 8)
+    match pbkdf2params.check(pbkdf2params.recommended(Pbkdf2HmacSha256), 4)
+        Some(e) => test.assert(pbkdf2err.is_input_fault(e))
+        None    => test.fail("four bytes of salt is below the RFC's own minimum")
+
+    test.case("and parameters carrying the override are reported too")
+    match pbkdf2params.allowing_below_floor(Pbkdf2HmacSha1, 1000, 20)
+        Err(e) => test.fail(e.message())
+        Ok(p)  =>
+            match pbkdf2params.check(p, 16)
+                Some(e) => test.assert(pbkdf2err.is_policy_fault(e))
+                None    => test.fail("a service that did not mean to enable it should find out")

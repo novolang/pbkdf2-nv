@@ -1,0 +1,64 @@
+[package]
+name        = "pbkdf2-nv"
+version     = "0.0.1"
+description = "RFC 8018's PBKDF2 over crypto-nv's HMAC-SHA-1, HMAC-SHA-256 and HMAC-SHA-512, with the work factor as a value a service builds once rather than four arguments with a security decision in their defaults, an iteration floor per pseudorandom function that a caller has to step over through a named constructor, and the PHC string format both ways.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  A key derivation reads no clock, no file and no randomness:
+# the password and the salt are bytes the caller already holds, and the
+# derived key is written into a buffer the caller already owns.
+# Generating a salt costs `[rand]`, which this layer's budget does not
+# admit, so the salt arrives as a parameter and a `host` package on top
+# is where a generator goes.  Every public function's effect row is
+# `[]`, and not one of them wanted to widen.
+#
+# It carries NO `tests/embedded_probe.nv` and makes no device claim.
+# Every function here speaks `Bytes` and `Result`, both of which are
+# heap objects that the embedded runtime does not define, and the
+# arithmetic underneath belongs to crypto-nv — whose own `*_core`
+# modules DO carry the claim.  A device that needs PBKDF2 drives
+# crypto-nv's SHA-256 core itself.
+layer       = "core"
+
+category    = "crypto"
+
+tags = ["pbkdf2", "kdf", "key-derivation", "password", "hmac", "rfc-8018", "rfc-6070", "pkcs5", "phc", "sans-io"]
+repository  = "https://github.com/novolang/pbkdf2-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "One HMAC, repeated as many times as you say"
+
+[dependencies]
+# crypto-nv supplies the three pseudorandom functions PBKDF2 is defined
+# over — `hashing.hmac_sha1`, `hashing.hmac_sha256` and
+# `hashing.hmac_sha512` — and `digest.ct_eq`, the constant-time
+# comparison a derived key must be checked with.  PBKDF2 is not an
+# algorithm of its own beyond the chaining: it IS an HMAC repeated, so
+# a package that reimplemented one would be publishing a second copy of
+# something already on the registry and already tested against FIPS
+# 180-4.  `core`, so the layer rule holds.
+crypto-nv = "^0.1"
+
+# NOT base64-nv.  PHC's B64 is RFC 4648's alphabet with the padding
+# FORBIDDEN rather than optional, and a decoder that tolerated a
+# trailing `=` would admit two spellings of one stored hash.  The
+# difference is a refusal, not an encoding, so it lives in
+# `pbkdf2phc` beside the rule it enforces.
+#
+# NOT bcrypt-nv.  The two packages solve the same problem in different
+# decades and neither is defined in terms of the other; the README
+# says which to take.
+#
+# NOT rand-nv.  See the `layer` comment: the salt is the caller's.

@@ -1,0 +1,146 @@
+// pbkdf2err — the refusals, and the one of them that is the package's
+// whole point.
+//
+// PBKDF2 itself refuses almost nothing.  RFC 8018 § 5.2 defines it for
+// any password, any salt and any iteration count above zero, and a
+// conforming implementation that was handed one iteration would
+// compute a perfectly correct answer that is worth nothing.  That is
+// the shape of the problem: the dangerous inputs are legal.
+//
+// So the refusals here are policy as much as arithmetic.
+// `Pbkdf2IterationsBelowFloor` is not RFC 8018 saying no; it is this
+// package saying that a caller who wants to go below the floor has to
+// say so at the line where the parameters are built.  `is_policy_fault`
+// separates those from the ones that are the standard's.
+
+// What a call in this package refuses with.
+//
+// Every arm carries the numbers a message needs, so a report says what
+// was asked for and what was given instead of "invalid parameters".
+pub enum Pbkdf2Error
+    // The iteration count is below this package's floor for that
+    // pseudorandom function, and the parameters were not built through
+    // the named override.  The floor is not in RFC 8018; see
+    // `pbkdf2params` for where the numbers come from.
+    Pbkdf2IterationsBelowFloor(asked: Int, floor: Int)
+    // The iteration count is zero or negative.  RFC 8018 § 5.2 writes
+    // `c` as "a positive integer", and one iteration of an HMAC is not
+    // a key derivation at all.
+    Pbkdf2IterationsNotPositive(asked: Int)
+    // The derived key length is zero or negative.  A key of no bytes
+    // is not a short key, it is the absence of one.
+    Pbkdf2DerivedKeyEmpty
+    // The derived key length is above what PBKDF2 can produce.  RFC
+    // 8018 § 5.2 caps it at `(2^32 - 1) * hLen`, because the block
+    // index `i` is a four-byte counter and there is no block
+    // 2^32.
+    Pbkdf2DerivedKeyTooLong(asked: Int, limit: Int)
+    // The output buffer is not the length the parameters say the key
+    // is.  `derive_into` writes exactly `dk_len` bytes and refuses a
+    // buffer of any other size rather than writing part of a key.
+    Pbkdf2OutputBufferWrong(want: Int, got: Int)
+    // The PHC string is not a PBKDF2 hash.  `what` names the field the
+    // parse stopped in — `"identifier"`, `"iterations"`, `"salt"`,
+    // `"hash"` — and `at` is the offset from the first character, so
+    // two tools reading the same row name the same place.
+    Pbkdf2Malformed(at: Int, what: Str)
+    // The PHC identifier names a pseudorandom function this package
+    // does not have.  `found` is the text as it was written, so a log
+    // can show `"pbkdf2-sha3-256"` rather than "unsupported".
+    Pbkdf2UnknownPrf(found: Str)
+    // A character that is not in PHC's B64 alphabet appeared where an
+    // encoded salt or hash was expected, or the encoding carried
+    // padding, which PHC forbids.
+    Pbkdf2BadB64(at: Int, found: Str)
+
+// message renders the refusal as one line of prose, with the numbers
+// in it.
+//
+// `Result<_, Pbkdf2Error>` requires this impl: SPEC § 3.4 admits a
+// `Result` error type only if it implements `Error`.
+impl Error for Pbkdf2Error
+    // Answer the one-line report: what was refused, and with which
+    // numbers.
+    //
+    // ```novo
+    // use pbkdf2err
+    //
+    // fn main() [io]
+    //     let e = Pbkdf2IterationsBelowFloor(asked: 1000, floor: 600000)
+    //     println(e.message())
+    //     // pbkdf2: 1000 iterations is below this package's floor of 600000
+    // ```
+    fn message(self) -> Str
+        todo("pbkdf2-nv.pbkdf2err.Pbkdf2Error.message")
+
+// Whether the refusal is this package's policy rather than RFC 8018's
+// rule.
+//
+// True for `Pbkdf2IterationsBelowFloor` alone.  It is the one refusal
+// a caller can turn off, and it is turned off by building the
+// parameters through `pbkdf2params.allowing_below_floor`, not by an
+// argument at the derivation.  A deployment that sees this refusal is
+// reading a stored hash older than its own floor, and the fix is to
+// say so once, in the code that reads old hashes.
+//
+// ```novo
+// use pbkdf2err
+//
+// fn main() [io]
+//     let e = Pbkdf2IterationsBelowFloor(asked: 1000, floor: 600000)
+//     println("${pbkdf2err.is_policy_fault(e)}")   // true
+// ```
+pub fn is_policy_fault(e: Pbkdf2Error) -> Bool []
+    todo("pbkdf2-nv.pbkdf2err.is_policy_fault")
+
+// Whether the refusal is about a length or a count the caller chose.
+//
+// True for `Pbkdf2IterationsBelowFloor`,
+// `Pbkdf2IterationsNotPositive`, `Pbkdf2DerivedKeyEmpty`,
+// `Pbkdf2DerivedKeyTooLong` and `Pbkdf2OutputBufferWrong`.  The fix is
+// in the calling code.
+//
+// ```novo
+// use pbkdf2err
+//
+// fn main() [io]
+//     println("${pbkdf2err.is_input_fault(Pbkdf2DerivedKeyEmpty)}")   // true
+// ```
+pub fn is_input_fault(e: Pbkdf2Error) -> Bool []
+    todo("pbkdf2-nv.pbkdf2err.is_input_fault")
+
+// Whether the refusal is about a stored string that is not a PBKDF2
+// PHC hash.
+//
+// True for `Pbkdf2Malformed`, `Pbkdf2UnknownPrf` and `Pbkdf2BadB64`.
+// The fix is in the data, or in whatever wrote it.
+//
+// ```novo
+// use pbkdf2err
+//
+// fn main() [io]
+//     let e = Pbkdf2UnknownPrf(found: "pbkdf2-sha3-256")
+//     println("${pbkdf2err.is_format_fault(e)}")   // true
+// ```
+pub fn is_format_fault(e: Pbkdf2Error) -> Bool []
+    todo("pbkdf2-nv.pbkdf2err.is_format_fault")
+
+// Where in a stored string the refusal was found, or -1 when the
+// refusal is not about a stored string.
+pub fn format_offset(e: Pbkdf2Error) -> Int []
+    todo("pbkdf2-nv.pbkdf2err.format_offset")
+
+// The refusal as a short stable token, for a log that is grepped
+// rather than read: `"iterations-below-floor"`,
+// `"iterations-not-positive"`, `"derived-key-empty"`,
+// `"derived-key-too-long"`, `"output-buffer-wrong"`, `"malformed"`,
+// `"unknown-prf"`, `"bad-b64"`.
+//
+// ```novo
+// use pbkdf2err
+//
+// fn main() [io]
+//     println(pbkdf2err.code(Pbkdf2DerivedKeyEmpty))   // derived-key-empty
+// ```
+pub fn code(e: Pbkdf2Error) -> Str []
+    todo("pbkdf2-nv.pbkdf2err.code")

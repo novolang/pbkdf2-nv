@@ -1,0 +1,191 @@
+// tests/pbkdf2_phc_tests.nv — the string a stored hash is written as,
+// both ways.
+//
+// RED ON PURPOSE, like every suite here: each assertion reaches
+// `not implemented: pbkdf2-nv.<module>.<fn>`.
+//
+// The format is the Password Hashing Competition's, as Argon2, scrypt
+// and the modern PBKDF2 libraries write it.  The B64 alphabet is RFC
+// 4648's; what differs is that the padding is FORBIDDEN, so that one
+// stored hash has exactly one spelling.  Every assertion here is about
+// one of those two facts.
+
+use std.test
+use std.bytes
+use pbkdf2params
+use pbkdf2phc
+use pbkdf2prf
+
+// A stored string whose salt and key are short and readable, so that
+// what is being asserted is the shape and not the arithmetic.
+fn stored() -> Str
+    "\$pbkdf2-sha256\$i=600000\$c2FsdHNhbHQ\$aGFzaA"
+
+@test
+fn test_b64_is_rfc_4648s_alphabet_with_the_padding_forbidden() [io]
+    test.case("four bytes encode to six characters and no equals sign")
+    test.assert_eq_str(pbkdf2phc.b64_encode(bytes.from_str("salt")), "c2FsdA")
+
+    test.case("and decode back")
+    match pbkdf2phc.b64_decode("c2FsdA")
+        Ok(raw) => test.assert_eq_str(bytes.to_str(raw), "salt")
+        Err(e)  => test.fail(e.message())
+
+    test.case("a trailing = is a malformed string, not a tolerated padding")
+    match pbkdf2phc.b64_decode("c2FsdA==")
+        Ok(_)  => test.fail("two spellings of one hash is one too many")
+        Err(e) =>
+            test.assert_eq_str(pbkdf2err.code(e), "bad-b64")
+            test.assert(pbkdf2err.is_format_fault(e))
+            test.assert(pbkdf2err.format_offset(e) >= 0)
+
+    test.case("so is a character outside the alphabet, and it names the offset")
+    match pbkdf2phc.b64_decode("c2Fs!A")
+        Ok(_)  => test.fail("! is not in RFC 4648's alphabet")
+        Err(e) => test.assert_eq(pbkdf2err.format_offset(e), 4)
+
+@test
+fn test_the_encoded_length_is_four_characters_per_three_bytes() [io]
+    test.case("32 bytes is 43 characters, unpadded")
+    test.assert_eq(pbkdf2phc.b64_chars_for(32), 43)
+
+    test.case("a whole multiple of three has no remainder")
+    test.assert_eq(pbkdf2phc.b64_chars_for(3), 4)
+    test.assert_eq(pbkdf2phc.b64_chars_for(30), 40)
+
+    test.case("and nothing encodes to nothing")
+    test.assert_eq(pbkdf2phc.b64_chars_for(0), 0)
+
+@test
+fn test_a_stored_string_parses_into_parameters_salt_and_key() [io]
+    test.case("the separator and the parameter name are the format's")
+    test.assert_eq_str(pbkdf2phc.PHC_FIELD_SEPARATOR, "\$")
+    test.assert_eq_str(pbkdf2phc.PHC_ITERATIONS_KEY, "i")
+
+    match pbkdf2phc.parse(stored())
+        Err(e) => test.fail(e.message())
+        Ok(h)  =>
+            test.case("the identifier gives the pseudorandom function")
+            test.assert_eq_str(
+                pbkdf2prf.prf_name(pbkdf2params.prf_of(pbkdf2phc.params_of(h))),
+                "pbkdf2-sha256")
+
+            test.case("the parameters carry the count that was written")
+            test.assert_eq(pbkdf2params.iterations_of(pbkdf2phc.params_of(h)), 600000)
+
+            test.case("the salt and the key come out decoded")
+            test.assert_eq_str(bytes.to_str(pbkdf2phc.salt_of(h)), "saltsalt")
+            test.assert_eq_str(bytes.to_str(pbkdf2phc.key_of(h)), "hash")
+
+            test.case("and the derived key length is the key's own length")
+            test.assert_eq(pbkdf2params.dk_len_of(pbkdf2phc.params_of(h)),
+                           bytes.len(pbkdf2phc.key_of(h)))
+
+            test.case("rendering gives back exactly the string that went in")
+            test.assert_eq_str(pbkdf2phc.render(h), stored())
+
+@test
+fn test_a_stored_hash_below_the_floor_still_parses() [io]
+    // A deployment that cannot read what it is holding cannot migrate
+    // off it.  The floor applies when parameters are used to DERIVE,
+    // not when a string is read.
+    test.case("an ancient SHA-1 hash at 1000 iterations parses")
+    match pbkdf2phc.parse("\$pbkdf2-sha1\$i=1000\$c2FsdHNhbHQ\$aGFzaA")
+        Err(e) => test.fail(e.message())
+        Ok(h)  =>
+            test.assert_eq(pbkdf2params.iterations_of(pbkdf2phc.params_of(h)), 1000)
+
+            test.case("and it is what needs_rehash answers true for")
+            test.assert(pbkdf2phc.needs_rehash(h,
+                            pbkdf2params.recommended(Pbkdf2HmacSha256)))
+
+    test.case("a stored key shorter than the service asks for needs one too")
+    // `stored()` carries a four-byte key and the recommendation is 32,
+    // so the count is right and the key is not.
+    match pbkdf2phc.parse(stored())
+        Ok(h)  => test.assert(pbkdf2phc.needs_rehash(h,
+                      pbkdf2params.recommended(Pbkdf2HmacSha256)))
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_a_malformed_string_names_the_field_it_stopped_in() [io]
+    test.case("something that is not a PHC string at all stops at the start")
+    match pbkdf2phc.parse("not a hash")
+        Ok(_)  => test.fail("a PHC string begins with a dollar sign")
+        Err(e) =>
+            test.assert_eq(pbkdf2err.format_offset(e), 0)
+            test.assert(pbkdf2err.is_format_fault(e))
+
+    test.case("an identifier this package does not have is named as found")
+    match pbkdf2phc.parse("\$pbkdf2-sha3-256\$i=600000\$c2FsdHNhbHQ\$aGFzaA")
+        Ok(_)  => test.fail("crypto-nv publishes three HMACs and this is not one")
+        Err(e) => test.assert_eq_str(pbkdf2err.code(e), "unknown-prf")
+
+    test.case("a parameter written under another name is refused, not guessed at")
+    match pbkdf2phc.parse("\$pbkdf2-sha256\$rounds=600000\$c2FsdHNhbHQ\$aGFzaA")
+        Ok(_)  => test.fail("this package reads and writes `i=`")
+        Err(e) => test.assert_eq_str(pbkdf2err.code(e), "malformed")
+
+    test.case("and a string with a field missing is refused")
+    match pbkdf2phc.parse("\$pbkdf2-sha256\$i=600000\$c2FsdHNhbHQ")
+        Ok(_)  => test.fail("a hash with no key is not a hash")
+        Err(e) => test.assert(pbkdf2err.is_format_fault(e))
+
+@test
+fn test_hashing_and_verifying_go_through_the_stored_parameters() [io]
+    let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+
+    test.case("hash_text writes a string with the identifier in front")
+    match pbkdf2phc.hash_text(p, bytes.from_str("password"), bytes.zeros(16))
+        Err(e) => test.fail(e.message())
+        Ok(s)  =>
+            test.assert(str.starts_with(s, "\$pbkdf2-sha256\$i=600000\$"))
+
+            test.case("and the password it was given verifies against it")
+            match pbkdf2phc.verify(s, bytes.from_str("password"))
+                Ok(ok) => test.assert(ok)
+                Err(e) => test.fail(e.message())
+
+            test.case("while another password answers false and not an error")
+            match pbkdf2phc.verify(s, bytes.from_str("hunter2"))
+                Ok(ok) => test.assert(not ok)
+                Err(e) => test.fail(e.message())
+
+    test.case("a row that is not a PBKDF2 hash is Err, not a wrong password")
+    match pbkdf2phc.verify("hunter2", bytes.from_str("password"))
+        Ok(_)  => test.fail("a database fault is not a bad password")
+        Err(e) => test.assert(pbkdf2err.is_format_fault(e))
+
+@test
+fn test_verifying_an_ancient_hash_does_not_meet_the_floor() [io]
+    // The floor is about writing a new hash.  A stored one written at
+    // 1000 iterations has to be verifiable, or the password can never
+    // be re-derived at a modern count.
+    test.case("a legacy SHA-1 hash at 1000 iterations verifies without the override")
+    match pbkdf2phc.verify("\$pbkdf2-sha1\$i=1000\$c2FsdHNhbHQ\$aGFzaA",
+                           bytes.from_str("password"))
+        Ok(ok) => test.assert(not ok)
+        Err(e) => test.fail(e.message())
+
+    test.case("but writing one at that count is refused")
+    match pbkdf2params.params(Pbkdf2HmacSha1, 1000, 20)
+        Ok(_)  => test.fail("a new hash at 1000 iterations is not worth writing")
+        Err(e) => test.assert(pbkdf2err.is_policy_fault(e))
+
+@test
+fn test_a_hash_value_can_be_built_without_parsing_a_string() [io]
+    match pbkdf2params.with_dk_len(pbkdf2params.recommended(Pbkdf2HmacSha256), 4)
+        Err(e) => test.fail(e.message())
+        Ok(p)  =>
+            match pbkdf2phc.phc_value(p, bytes.from_str("saltsalt"),
+                                      bytes.from_str("hash"))
+                Err(e) => test.fail(e.message())
+                Ok(h)  =>
+                    test.case("it renders to the string the parse suite reads")
+                    test.assert_eq_str(pbkdf2phc.render(h), stored())
+
+    test.case("and a key whose length disagrees with the parameters is refused")
+    match pbkdf2phc.phc_value(pbkdf2params.recommended(Pbkdf2HmacSha256),
+                              bytes.from_str("saltsalt"), bytes.from_str("hash"))
+        Ok(_)  => test.fail("the parameters say 32 bytes and the key is 4")
+        Err(e) => test.assert(pbkdf2err.is_input_fault(e))

@@ -1,0 +1,128 @@
+// pbkdf2prf — which HMAC PBKDF2 is run over.
+//
+// WHAT A PSEUDORANDOM FUNCTION IS HERE.  RFC 8018 § 5.2 defines PBKDF2
+// over an abstract `PRF` — a keyed function of the password and a
+// counter — and PKCS #5 v2.1 Appendix B.1 names three: HMAC-SHA-1,
+// HMAC-SHA-224 through HMAC-SHA-512.  The choice decides two numbers
+// and nothing else: how long one block of output is, and how much one
+// iteration costs.
+//
+// | arm | HMAC | block | PHC identifier |
+// | --- | --- | --- | --- |
+// | `Pbkdf2HmacSha1` | HMAC-SHA-1 | 20 bytes | `pbkdf2-sha1` |
+// | `Pbkdf2HmacSha256` | HMAC-SHA-256 | 32 bytes | `pbkdf2-sha256` |
+// | `Pbkdf2HmacSha512` | HMAC-SHA-512 | 64 bytes | `pbkdf2-sha512` |
+//
+// WHY SHA-1 IS HERE AND IS NOT DEPRECATED.  PBKDF2-HMAC-SHA-1 is what
+// WPA2's pre-shared key is defined over, what most deployed PKCS #8
+// and PKCS #12 files specify, what RFC 6070's test vectors are for,
+// and what half the password hashes written before 2015 use.  A
+// package that refused it could not read any of them.  SHA-1's
+// collision weakness does not apply here: PBKDF2 uses the hash inside
+// an HMAC, and HMAC-SHA-1 has no known break.  What a new system
+// should not do is CHOOSE it, and `pbkdf2params.recommended` does not.
+//
+// WHY SHA-224 AND SHA-384 ARE NOT HERE.  crypto-nv publishes neither,
+// and no format on this grid specifies either.  A caller that meets
+// one is told `Pbkdf2UnknownPrf` with the identifier it read, which is
+// more useful than a hash computed with the wrong function.
+
+// Which pseudorandom function PBKDF2 is run over.
+//
+// ```novo
+// use pbkdf2prf
+//
+// fn main() [io]
+//     println(pbkdf2prf.prf_name(Pbkdf2HmacSha256))   // pbkdf2-sha256
+// ```
+pub enum Pbkdf2Prf
+    // HMAC-SHA-1, over crypto-nv's `hashing.hmac_sha1`.  Here to read
+    // what is already deployed; see the note at the top of this
+    // module.
+    Pbkdf2HmacSha1
+    // HMAC-SHA-256, over crypto-nv's `hashing.hmac_sha256`.  What a
+    // new system takes.
+    Pbkdf2HmacSha256
+    // HMAC-SHA-512, over crypto-nv's `hashing.hmac_sha512`.  Twice the
+    // block length of SHA-256, which halves the number of blocks a
+    // long key needs.
+    Pbkdf2HmacSha512
+
+// Bytes one block of output from this pseudorandom function occupies:
+// 20, 32 or 64.
+//
+// RFC 8018 calls this `hLen`, and it is the unit everything else in
+// the specification is counted in.
+//
+// ```novo
+// use pbkdf2prf
+//
+// fn main() [io]
+//     println("${pbkdf2prf.block_bytes(Pbkdf2HmacSha256)}")   // 32
+// ```
+pub fn block_bytes(p: Pbkdf2Prf) -> Int []
+    todo("pbkdf2-nv.pbkdf2prf.block_bytes")
+
+// Bytes the underlying hash's compression function reads at a time:
+// 64 for SHA-1 and SHA-256, 128 for SHA-512.
+//
+// HMAC pads the key to this length, so a password longer than it is
+// hashed first — which means two long passwords with the same hash
+// derive the same key, and it is why a password longer than the block
+// size gains nothing.
+//
+// ```novo
+// use pbkdf2prf
+//
+// fn main() [io]
+//     println("${pbkdf2prf.hmac_block_bytes(Pbkdf2HmacSha512)}")   // 128
+// ```
+pub fn hmac_block_bytes(p: Pbkdf2Prf) -> Int []
+    todo("pbkdf2-nv.pbkdf2prf.hmac_block_bytes")
+
+// The identifier this function is written with in a PHC string:
+// `"pbkdf2-sha1"`, `"pbkdf2-sha256"`, `"pbkdf2-sha512"`.
+//
+// ```novo
+// use pbkdf2prf
+//
+// fn main() [io]
+//     println(pbkdf2prf.prf_name(Pbkdf2HmacSha1))   // pbkdf2-sha1
+// ```
+pub fn prf_name(p: Pbkdf2Prf) -> Str []
+    todo("pbkdf2-nv.pbkdf2prf.prf_name")
+
+// The function that identifier denotes, or the refusal naming what was
+// found.
+//
+// Exactly the three spellings above.  `"pbkdf2"` alone answers
+// `Pbkdf2UnknownPrf`: the bare identifier appears in the wild meaning
+// SHA-1, and guessing at it would be guessing at a stored hash.
+//
+// ```novo
+// use pbkdf2prf
+//
+// fn main() [io]
+//     match pbkdf2prf.prf_named("pbkdf2-sha3-256")
+//         Ok(_)  => println("this cannot happen: SHA-3 is not one of the three")
+//         Err(e) => println(pbkdf2err.code(e))   // unknown-prf
+// ```
+pub fn prf_named(name: Str) -> Result<Pbkdf2Prf, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2prf.prf_named")
+
+// The largest derived key this function can produce: `(2^32 - 1)`
+// blocks of `block_bytes`.
+//
+// RFC 8018 § 5.2's cap.  The block index is a four-byte counter and
+// there is no block 2^32.  No caller will meet this; it is published
+// so that the refusal `Pbkdf2DerivedKeyTooLong` has a number in it
+// that a reader can check.
+//
+// ```novo
+// use pbkdf2prf
+//
+// fn main() [io]
+//     println("${pbkdf2prf.max_derived_bytes(Pbkdf2HmacSha256) > 0}")   // true
+// ```
+pub fn max_derived_bytes(p: Pbkdf2Prf) -> Int []
+    todo("pbkdf2-nv.pbkdf2prf.max_derived_bytes")

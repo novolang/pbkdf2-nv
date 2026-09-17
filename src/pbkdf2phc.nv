@@ -1,0 +1,246 @@
+// pbkdf2phc — the string a stored PBKDF2 hash is written as.
+//
+// THE FORMAT.  The PHC string format came out of the Password Hashing
+// Competition and is what Argon2, scrypt and modern PBKDF2 libraries
+// all write.  A PBKDF2 hash in it looks like this:
+//
+//     $pbkdf2-sha256$i=600000$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA
+//     ^^^^^^^^^^^^^^ ^^^^^^^^ ^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^
+//     |              |        |           the derived key, B64
+//     |              |        the salt, B64
+//     |              the parameters, `name=value` joined by commas
+//     the identifier, which names the pseudorandom function
+//
+// Every field is separated by a dollar sign, so the fields are found
+// by splitting rather than by counting — which is the whole advantage
+// over bcrypt's fixed-width modular crypt format, where the salt and
+// the hash run together.
+//
+// WHY THE PARAMETERS ARE IN THE STRING.  A stored hash outlives the
+// configuration that produced it.  A deployment that raises its
+// iteration count still has to verify the hashes written at the old
+// one, and the only way to do that is to read the count out of the
+// hash itself.  `verify` does exactly that: it builds parameters from
+// the string it was given, not from the service's current ones, and
+// `needs_rehash` is the separate question of whether those parameters
+// are still good enough.
+//
+// B64 IS NOT BASE64.  PHC's alphabet IS RFC 4648's — `A-Za-z0-9+/` —
+// but the PADDING IS FORBIDDEN.  A trailing `=` is a malformed string
+// and not a tolerated one, because the field lengths are implied by
+// the encoding and a padded field would make two spellings of one
+// hash.  That is the opposite kind of trap from bcrypt's, where the
+// alphabet is different and the padding is absent too.
+
+use std.bytes
+
+// The character that separates a PHC string's fields.
+pub const PHC_FIELD_SEPARATOR = "\$"
+
+// The parameter name PBKDF2 writes its iteration count under: `"i"`.
+//
+// PHC leaves the parameter names to each function.  `i` is what the
+// Python `passlib` and Go `pbkdf2` PHC writers use and what this
+// package reads and writes.  A string using `rounds=` or `c=` is
+// `Pbkdf2Malformed` naming the `"iterations"` field, rather than a
+// guess.
+pub const PHC_ITERATIONS_KEY = "i"
+
+// A parsed PHC string: the parameters, the salt and the stored key.
+//
+// A plain struct rather than a `@value` one because it is a `Result`
+// payload and a `@value` struct cannot be one (E2015).
+//
+// ```novo
+// use pbkdf2phc
+//
+// fn main() [io]
+//     let stored = "\$pbkdf2-sha256\$i=600000\$c2FsdHNhbHQ\$aGFzaA"
+//     match pbkdf2phc.parse(stored)
+//         Ok(h)  => println("${pbkdf2params.iterations_of(pbkdf2phc.params_of(h))}")
+//         Err(e) => println(e.message())
+// ```
+pub struct Pbkdf2Phc
+    // The pseudorandom function, the iteration count and the derived
+    // key length, read out of the string.
+    params: Pbkdf2Params
+    // The salt, decoded.
+    salt: Bytes
+    // The derived key, decoded.  Its length is what `params.dk_len`
+    // says.
+    key: Bytes
+
+// Encode bytes in PHC's B64: RFC 4648's alphabet with no padding.
+//
+// ```novo
+// use std.bytes
+// use pbkdf2phc
+//
+// fn main() [io]
+//     println(pbkdf2phc.b64_encode(bytes.from_str("salt")))   // c2FsdA
+// ```
+pub fn b64_encode(raw: Bytes) -> Str []
+    todo("pbkdf2-nv.pbkdf2phc.b64_encode")
+
+// Decode PHC's B64, or refuse naming the character and the offset.
+//
+// A trailing `=` is `Pbkdf2BadB64` and not a tolerated padding, so
+// that one stored key has exactly one spelling.
+//
+// ```novo
+// use pbkdf2phc
+//
+// fn main() [io]
+//     match pbkdf2phc.b64_decode("c2FsdA==")
+//         Ok(_)  => println("this cannot happen: PHC forbids padding")
+//         Err(e) => println(pbkdf2err.code(e))   // bad-b64
+// ```
+pub fn b64_decode(text: Str) -> Result<Bytes, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2phc.b64_decode")
+
+// How many characters `n` bytes encode to: four per three, rounded up,
+// with no padding.
+//
+// ```novo
+// use pbkdf2phc
+//
+// fn main() [io]
+//     println("${pbkdf2phc.b64_chars_for(32)}")   // 43
+// ```
+pub fn b64_chars_for(n: Int) -> Int []
+    todo("pbkdf2-nv.pbkdf2phc.b64_chars_for")
+
+// Parse a stored string into its parameters, salt and key.
+//
+// Every refusal names the field it stopped in and the offset it
+// stopped at, so a row that will not parse can be found in a database
+// rather than merely rejected.  The derived key length is taken from
+// the DECODED key and not from a parameter, because the string does
+// not carry one and the key's own length is the truth.
+//
+// The iteration count is read as it was written, WITHOUT the floor
+// check: a hash stored at 1000 iterations still has to parse, or a
+// deployment cannot see what it is holding.  The floor applies when
+// the parameters are used to DERIVE, which is what `verify` says about
+// it.
+//
+// ```novo
+// use pbkdf2phc
+//
+// fn main() [io]
+//     match pbkdf2phc.parse("not a hash")
+//         Ok(_)  => println("this cannot happen")
+//         Err(e) => println("${pbkdf2err.format_offset(e)}")   // 0
+// ```
+pub fn parse(text: Str) -> Result<Pbkdf2Phc, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2phc.parse")
+
+// Render a parsed hash back to its string.
+//
+// `parse` then `render` gives back exactly the string that went in,
+// for every string `parse` accepted.  That round trip is what a test
+// asserts and what a migration relies on.
+//
+// ```novo
+// use pbkdf2phc
+//
+// fn main() [io]
+//     let stored = "\$pbkdf2-sha256\$i=600000\$c2FsdHNhbHQ\$aGFzaA"
+//     match pbkdf2phc.parse(stored)
+//         Ok(h)  => println("${pbkdf2phc.render(h) == stored}")   // true
+//         Err(e) => println(e.message())
+// ```
+pub fn render(h: Pbkdf2Phc) -> Str []
+    todo("pbkdf2-nv.pbkdf2phc.render")
+
+// Derive a key from a password and a salt and answer the string to
+// store.
+//
+// The floor applies here, because this is a new hash being written.
+//
+// ```novo
+// use std.bytes
+// use pbkdf2params
+// use pbkdf2phc
+//
+// fn main() [io]
+//     let p = pbkdf2params.recommended(Pbkdf2HmacSha256)
+//     match pbkdf2phc.hash_text(p, bytes.from_str("password"), bytes.zeros(16))
+//         Ok(s)  => println("${str.starts_with(s, "\$pbkdf2-sha256\$")}")   // true
+//         Err(e) => println(e.message())
+// ```
+pub fn hash_text(p: Pbkdf2Params, password: Bytes, salt: Bytes) -> Result<Str, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2phc.hash_text")
+
+// Check a password against a stored string.
+//
+// Parses the string, derives a key with THE PARAMETERS THE STRING
+// CARRIES, and compares in constant time.  The floor does not apply:
+// a stored hash written at a count below this package's floor still
+// has to be verifiable, or a deployment can never migrate off it.
+// `needs_rehash` is the separate question.
+//
+// A string that does not parse is a refusal and not a `false`, because
+// a row that is not a PBKDF2 hash is a different problem from a
+// password that is wrong, and a login endpoint that conflated them
+// would report a database fault as a bad password.
+//
+// ```novo
+// use std.bytes
+// use pbkdf2phc
+//
+// fn main() [io]
+//     let stored = "\$pbkdf2-sha256\$i=600000\$c2FsdHNhbHQ\$aGFzaA"
+//     match pbkdf2phc.verify(stored, bytes.from_str("password"))
+//         Ok(ok) => println("${ok}")
+//         Err(e) => println(e.message())
+// ```
+pub fn verify(stored: Str, password: Bytes) -> Result<Bool, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2phc.verify")
+
+// Whether a stored hash should be replaced because its parameters are
+// weaker than a service's current ones.
+//
+// True when the stored iteration count is below the service's, when
+// the pseudorandom function differs, or when the stored key is shorter
+// than the service asks for.  The question a login endpoint asks after
+// a successful verify, which is the one moment the password is in
+// hand and a stored hash's cost can be raised.
+//
+// ```novo
+// use pbkdf2params
+// use pbkdf2phc
+//
+// fn main() [io]
+//     let now = pbkdf2params.recommended(Pbkdf2HmacSha256)
+//     let stored = "\$pbkdf2-sha256\$i=1000\$c2FsdHNhbHQ\$aGFzaA"
+//     match pbkdf2phc.parse(stored)
+//         Ok(h)  => println("${pbkdf2phc.needs_rehash(h, now)}")   // true
+//         Err(e) => println(e.message())
+// ```
+pub fn needs_rehash(h: Pbkdf2Phc, current: Pbkdf2Params) -> Bool []
+    todo("pbkdf2-nv.pbkdf2phc.needs_rehash")
+
+// The parameters a parsed hash carries.
+pub fn params_of(h: Pbkdf2Phc) -> Pbkdf2Params []
+    todo("pbkdf2-nv.pbkdf2phc.params_of")
+
+// The salt a parsed hash carries.
+//
+// Verifying means deriving with THIS salt, which is why it is stored
+// beside the key.
+pub fn salt_of(h: Pbkdf2Phc) -> Bytes []
+    todo("pbkdf2-nv.pbkdf2phc.salt_of")
+
+// The derived key a parsed hash carries.
+//
+// Compare it with `pbkdf2kdf.keys_equal`, never with `==`.
+pub fn key_of(h: Pbkdf2Phc) -> Bytes []
+    todo("pbkdf2-nv.pbkdf2phc.key_of")
+
+// A hash value from its three parts, without parsing a string.
+//
+// What `hash_text` builds before rendering, and what a test builds to
+// check `render` against a known string.
+pub fn phc_value(p: Pbkdf2Params, salt: Bytes, key: Bytes) -> Result<Pbkdf2Phc, Pbkdf2Error> []
+    todo("pbkdf2-nv.pbkdf2phc.phc_value")

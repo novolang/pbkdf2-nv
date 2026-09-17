@@ -1,0 +1,171 @@
+// tests/pbkdf2_vectors_tests.nv — RFC 6070's known answers, and the
+// SHA-256 set beside them.
+//
+// They COMPILE today and they FAIL at run, with `not implemented:
+// pbkdf2-nv.<module>.<fn>` from the `todo()` that is each body.  That
+// is the expected state of an interface release: the compiler has
+// checked every signature, every type and every effect row, and
+// nothing else has been checked because there is nothing else yet.
+//
+// WHERE THE VECTORS COME FROM.  RFC 6070 is the canonical set for
+// PBKDF2-HMAC-SHA-1 and prints six cases, including one whose password
+// and salt both contain a zero byte and one at 16,777,216 iterations
+// that the RFC itself marks as slow.  The SHA-256 cases are the ones
+// published alongside the scrypt draft and carried by RustCrypto's
+// `pbkdf2` crate and by CPython's `hashlib` test suite.
+//
+// EVERY VECTOR BELOW IS AT AN ITERATION COUNT FAR UNDER THIS
+// PACKAGE'S FLOOR, so every one of them goes through
+// `allowing_below_floor`.  That is the floor working: a test vector
+// from 2011 is exactly the case the override exists for, and the
+// suite says so at every call.
+
+use std.test
+use std.bytes
+use pbkdf2kdf
+use pbkdf2params
+
+fn hex(s: Str) -> Bytes
+    bytes.from_hex(s) ?? bytes.zeros(0)
+
+// Parameters below the floor, which is where every published vector
+// lives.  The `Err` arm is unreachable for the counts used here.
+fn legacy(prf: Pbkdf2Prf, iterations: Int, dk_len: Int) -> Pbkdf2Params
+    match pbkdf2params.allowing_below_floor(prf, iterations, dk_len)
+        Ok(p)  => p
+        Err(_) => Pbkdf2Params { prf: prf, iterations: 1, dk_len: 1,
+                                 below_floor_allowed: true }
+
+// The derived key as hex, or the failure's message.
+fn derived(p: Pbkdf2Params, password: Str, salt: Str) -> Str
+    match pbkdf2kdf.derive(p, bytes.from_str(password), bytes.from_str(salt))
+        Ok(dk) => bytes.to_hex(dk)
+        Err(e) => e.message()
+
+@test
+fn test_rfc_6070_case_one_two_and_three() [io]
+    // "password" over "salt", at one, two and 4096 iterations, 20
+    // bytes out — one whole block of HMAC-SHA-1.
+    test.case("c = 1")
+    test.assert_eq_str(derived(legacy(Pbkdf2HmacSha1, 1, 20), "password", "salt"),
+        "0c60c80f961f0e71f3a9b524af6012062fe037a6")
+
+    test.case("c = 2")
+    test.assert_eq_str(derived(legacy(Pbkdf2HmacSha1, 2, 20), "password", "salt"),
+        "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957")
+
+    test.case("c = 4096")
+    test.assert_eq_str(derived(legacy(Pbkdf2HmacSha1, 4096, 20), "password", "salt"),
+        "4b007901b765489abead49d926f721d065a429c1")
+
+@test
+fn test_rfc_6070_case_five_crosses_the_block_boundary() [io]
+    // Twenty-five bytes out of a twenty-byte block, so the derivation
+    // computes TWO blocks and truncates — which is where a
+    // implementation that got the block index wrong first shows it.
+    test.case("25 bytes, two blocks, over a long password and salt")
+    test.assert_eq_str(
+        derived(legacy(Pbkdf2HmacSha1, 4096, 25),
+                "passwordPASSWORDpassword",
+                "saltSALTsaltSALTsaltSALTsaltSALTsalt"),
+        "3d2eec4fe41c849b80c8d83662c0e44a8b291a964cf2f07038")
+
+@test
+fn test_rfc_6070_case_six_has_a_zero_byte_in_both_inputs() [io]
+    // "pass\0word" and "sa\0lt".  Unlike bcrypt, PBKDF2 has no
+    // NUL-terminated string anywhere in it: the password and the salt
+    // are byte strings and a zero byte is an ordinary byte.  An
+    // implementation that went through a C string would stop at it and
+    // compute a different key.
+    let password = bytes.from_byte_list([0x70, 0x61, 0x73, 0x73, 0x00,
+                                         0x77, 0x6f, 0x72, 0x64])
+    let salt = bytes.from_byte_list([0x73, 0x61, 0x00, 0x6c, 0x74])
+
+    test.case("16 bytes out, at 4096 iterations")
+    match pbkdf2kdf.derive(legacy(Pbkdf2HmacSha1, 4096, 16), password, salt)
+        Ok(dk) => test.assert_eq_str(bytes.to_hex(dk),
+            "56fa6aa75548099dcc37d7f03425e0c3")
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_the_sha256_vectors() [io]
+    test.case("c = 1, 32 bytes")
+    test.assert_eq_str(derived(legacy(Pbkdf2HmacSha256, 1, 32), "password", "salt"),
+        "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
+
+    test.case("c = 2, 32 bytes")
+    test.assert_eq_str(derived(legacy(Pbkdf2HmacSha256, 2, 32), "password", "salt"),
+        "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43")
+
+    test.case("c = 4096, 32 bytes")
+    test.assert_eq_str(derived(legacy(Pbkdf2HmacSha256, 4096, 32), "password", "salt"),
+        "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a")
+
+@test
+fn test_the_block_index_is_four_bytes_big_endian() [io]
+    // The single most common place a hand-written PBKDF2 goes wrong.
+    // A little-endian index gives a perfectly self-consistent key that
+    // matches nothing, and it does so three hundred thousand HMACs
+    // after the mistake.  This assertion fails AT the mistake.
+    test.case("the first block's seed is the salt then 00 00 00 01")
+    test.assert_eq_str(bytes.to_hex(pbkdf2kdf.block_seed(bytes.from_str("salt"), 1)),
+        "73616c7400000001")
+
+    test.case("the second block's is the salt then 00 00 00 02")
+    test.assert_eq_str(bytes.to_hex(pbkdf2kdf.block_seed(bytes.from_str("salt"), 2)),
+        "73616c7400000002")
+
+    test.case("and the index occupies four bytes whatever it is")
+    test.assert_eq(pbkdf2kdf.PBKDF2_BLOCK_INDEX_BYTES, 4)
+    test.assert_eq(bytes.len(pbkdf2kdf.block_seed(bytes.zeros(0), 1)), 4)
+
+@test
+fn test_a_block_is_the_first_hlen_bytes_of_the_derived_key() [io]
+    // `F(P, S, c, 1)` and a one-block derivation are the same bytes,
+    // which is what lets a caller deriving two keys drive the blocks
+    // itself instead of deriving a long key and slicing it.
+    let p = legacy(Pbkdf2HmacSha1, 4096, 20)
+
+    test.case("block 1 is RFC 6070 case 3")
+    match pbkdf2kdf.block(p, bytes.from_str("password"), bytes.from_str("salt"), 1)
+        Ok(b)  => test.assert_eq_str(bytes.to_hex(b),
+            "4b007901b765489abead49d926f721d065a429c1")
+        Err(e) => test.fail(e.message())
+
+    test.case("and blocks are one-based: there is no block 0")
+    match pbkdf2kdf.block(p, bytes.from_str("password"), bytes.from_str("salt"), 0)
+        Ok(_)  => test.fail("RFC 8018 numbers the blocks from 1")
+        Err(e) => test.assert(pbkdf2err.is_input_fault(e))
+
+@test
+fn test_the_output_buffer_is_the_callers_and_its_length_is_checked() [io]
+    let p = legacy(Pbkdf2HmacSha256, 4096, 32)
+
+    test.case("a buffer of the right length comes back filled")
+    match pbkdf2kdf.derive_into(p, bytes.from_str("password"),
+                                bytes.from_str("salt"), bytes.zeros(32))
+        Ok(dk) => test.assert_eq_str(bytes.to_hex(dk),
+            "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a")
+        Err(e) => test.fail(e.message())
+
+    test.case("a short buffer is refused, not partially written")
+    match pbkdf2kdf.derive_into(p, bytes.from_str("password"),
+                                bytes.from_str("salt"), bytes.zeros(16))
+        Ok(_)  => test.fail("half a key is worse than no key")
+        Err(e) =>
+            test.assert_eq_str(pbkdf2err.code(e), "output-buffer-wrong")
+            test.assert(pbkdf2err.is_input_fault(e))
+
+@test
+fn test_a_derived_key_is_compared_in_constant_time() [io]
+    // Verifying a password means deriving a key and comparing it with
+    // a stored one.  A comparison that stops at the first differing
+    // byte says how many bytes matched.
+    test.case("equal keys compare equal")
+    test.assert(pbkdf2kdf.keys_equal(hex("00112233"), hex("00112233")))
+
+    test.case("different keys do not")
+    test.assert(not pbkdf2kdf.keys_equal(hex("00112233"), hex("00112234")))
+
+    test.case("and different lengths do not")
+    test.assert(not pbkdf2kdf.keys_equal(hex("001122"), hex("00112233")))
